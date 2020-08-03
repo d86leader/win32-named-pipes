@@ -1,0 +1,39 @@
+-- This file has been generated from package.yaml by hpack version 0.17.1.
+--
+-- see: https://github.com/sol/hpack
+
+name:           win32-named-pipes
+version:        0.1.0.0
+author:         d86leader
+maintainer:     d86leader@mail.com
+license:        BSD3
+build-type:     Simple
+cabal-version:  >= 1.10
+
+library
+  hs-source-dirs:
+      lib
+  ghc-options: -Wall -Wdeprecations -threaded
+  build-depends:
+      base
+    , bytestring
+    , data-default
+    , transformers
+    , Win32 >= 2.5.1.0
+  exposed-modules:
+      System.Win32.NamedPipe
+      System.Win32.NamedPipe.Native
+      System.Win32.NamedPipe.NativeTypes
+  default-language: Haskell2010
+
+executable reply-pipe
+  main-is: Main.hs
+  hs-source-dirs:
+      app
+  ghc-options: -Wall -Wdeprecations -threaded +RTS -N -RTS
+  build-depends:
+      base
+    , bytestring
+    , data-default
+    , win32-named-pipes
+  default-language: Haskell2010
