@@ -28,11 +28,10 @@ servePipe number pipe = do
     let n = pack . show $ number
     let handle = handleOfPipe pipe
     putStrLn $ n <> " Waiting for pipe message"
-    times 3 $ \_ -> do
-        message <- hGetSome handle 512
-        putStrLn $ n <> " got message: " <> message
-        unsafeWritePipe pipe $ "Ok " <> n
-        putStrLn $ n <> " put message back"
+    message <- hGetSome handle 512
+    putStrLn $ n <> " got message: " <> message
+    unsafeWritePipe pipe $ "Ok " <> n
+    putStrLn $ n <> " put message back"
     disconnectNamedPipe pipe
     putStrLn $ n <> " disconnect pipe"
     closeNamedPipe pipe
