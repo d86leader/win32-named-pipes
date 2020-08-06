@@ -15,7 +15,7 @@ library:
   - bytestring
   - data-default
   - transformers
-  - Win32 >= 2.5.1.0
+  - Win32 >= 2.3 && < 2.5
 
 executables:
   reply-pipe:

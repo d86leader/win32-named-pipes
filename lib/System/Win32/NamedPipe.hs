@@ -28,7 +28,8 @@ import Foreign.Ptr (nullPtr)
 import System.IO (Handle, hClose)
 import System.Mem.Weak (Weak, mkWeak, finalize, deRefWeak)
 import System.Win32.File (closeHandle, flushFileBuffers, win32_WriteFile)
-import System.Win32.Types (HANDLE, ErrCode, hANDLEToHandle, iNVALID_HANDLE_VALUE, getLastError)
+import System.Win32.NamedPipe.Backport (hANDLEToHandle)
+import System.Win32.Types (HANDLE, ErrCode, iNVALID_HANDLE_VALUE, getLastError)
 
 import System.Win32.NamedPipe.Native
 
