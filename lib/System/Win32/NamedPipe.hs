@@ -21,6 +21,7 @@ import Control.Exception (Exception (..), throwIO)
 import Control.Monad (when)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Cont (ContT (..), evalContT)
+import GHC.Event.Windows (withOverlapped, CbResult (CbDone, CbNone), ioSuccess, ioFailed)
 import Foreign.C.String (withCWString)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Storable (poke)
@@ -70,9 +71,7 @@ instance Enum PipeAccess where
     _ -> error "Bad enum"
 
 data PipeFileFlag = FileFlagFirstPipeInstance -- ^ Only the first pipe with this flag can be created
-                  | FileFlagWriteThrough -- ^ Enhances speed in one edge case, see MSDN
                   | FileFlagNone
-                  -- I don't support overlapped flag
   deriving (Eq, Show, Read)
 
 instance Enum PipeFileFlag where
@@ -106,7 +105,7 @@ instance Enum PipeSecurity where
     _ -> error "Bad enum"
 
 
-data PipeMode = PipeMode PipeType PipeWaitMode PipeRemoteMode
+data PipeMode = PipeMode PipeType PipeRemoteMode
   deriving (Eq, Show, Read)
 
 instance Default PipeMode where
@@ -127,18 +126,6 @@ instance Enum PipeType where
    0x4 -> PipeTypeMessageByte
    0x6 -> PipeTypeMessage
    _ -> error "Bad enum"
-
-data PipeWaitMode = PipeWait | PipeNowait -- ^ File operations return immediately
-  deriving (Eq, Show, Read)
-
-instance Enum PipeWaitMode where
-  fromEnum = \case
-    PipeWait -> 0
-    PipeNowait -> 1
-  toEnum = \case
-    0 -> PipeWait
-    1 -> PipeNowait
-    _ -> error "Bad enum"
 
 data PipeRemoteMode = PipeAcceptRemoteClients | PipeRejectRemoteClients
   deriving (Eq, Show, Read)
@@ -179,15 +166,17 @@ createNamedPipe name openMode pipeMode instances outSize inSize timeout = do
   winHandle <- evalContT $ do
     lpName <- ContT $ withCWString name
     let dwOpenMode = case openMode of OpenMode a f s -> fromEnum a .|. fromEnum f .|. fromEnum s
+    let dwOpenMode' = dwOpenMode .|. fILE_FLAG_OVERLAPPED
     let dwPipeMode = case pipeMode of PipeMode t w r -> fromEnum t .|. fromEnum w .|. fromEnum r
+    let dwPipeMode' = dwPipeMode .|. 0x1 -- NOWAIT
     let nInstances = case instances of
           UnlimitedInstances -> pIPE_UNLIMITED_INSTANCES
           LimitedInstances n -> fromIntegral n
     securityAttrPtr <- ContT alloca
     lift $ poke securityAttrPtr $ SECURITY_ATTRIBUTES True -- inherit fd for forks
     lift $ c_CreateNamedPipe lpName
-                             (fromIntegral dwOpenMode)
-                             (fromIntegral dwPipeMode)
+                             (fromIntegral dwOpenMode')
+                             (fromIntegral dwPipeMode')
                              nInstances
                              (fromIntegral outSize)
                              (fromIntegral inSize)
@@ -201,18 +190,25 @@ createNamedPipe name openMode pipeMode instances outSize inSize timeout = do
   pure $ NamedPipe namedPipeHandle hsHandle
 
 
--- | Get the client of the named pipe. Blocks the thread until client is found.
+-- | Get the client of the named pipe
 connectNamedPipe :: NamedPipe -> IO ()
 connectNamedPipe NamedPipe {namedPipeInternal} = do
   handle <- fromJust <$> deRefWeak namedPipeInternal
-  r <- c_ConnectNamedPipe handle nullPtr
-  if r
-    then pure ()
-    else do
-      errcode <- getLastError
-      if errcode == eRROR_PIPE_CONNECTED
-        then pure ()
-        else throwIO $ Win32ErrorCode "Couldn't connect named pipe" errcode
+  withOverlapped "ConnectNamedPipe" handle 0 (startCB handle) completionCB
+  where
+    startCB handle lpOverlapped =
+      r <- c_ConnectNamedPipe handle nullPtr
+      if r -- discard pipe_connected error, let the manager handle every other error
+        then CbNone True
+        else do
+          errcode <- getLastError
+          if errcode == eRROR_PIPE_CONNECTED
+            then CbDone Nothing
+            else CbNone False
+    --
+    completionCB err _bytesTransferred
+      | err == eRROR_SUCCESS  = ioSuccess ()
+      | otherwise             = ioFailed err
 
 -- | Disconnect the client from the named pipe
 disconnectNamedPipe :: NamedPipe -> IO ()
