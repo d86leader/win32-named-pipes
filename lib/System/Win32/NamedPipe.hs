@@ -25,12 +25,13 @@ import Foreign.C.String (withCWString)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Storable (poke)
 import Foreign.Ptr (nullPtr)
-import System.IO (Handle, hClose)
+import System.IO (Handle)
 import System.Mem.Weak (Weak, mkWeak, finalize, deRefWeak)
 import System.Win32.File (closeHandle, flushFileBuffers, win32_WriteFile)
 import System.Win32.Types (HANDLE, ErrCode, hANDLEToHandle, iNVALID_HANDLE_VALUE, getLastError)
 
 import System.Win32.NamedPipe.Native
+import System.Win32.NamedPipe.Security.Native (SECURITY_ATTRIBUTES (..))
 
 
 data Win32ErrorCode = Win32ErrorCode String ErrCode
@@ -184,7 +185,7 @@ createNamedPipe name openMode pipeMode instances outSize inSize timeout = do
           UnlimitedInstances -> pIPE_UNLIMITED_INSTANCES
           LimitedInstances n -> fromIntegral n
     securityAttrPtr <- ContT alloca
-    lift $ poke securityAttrPtr $ SECURITY_ATTRIBUTES True -- inherit fd for forks
+    lift $ poke securityAttrPtr $ SECURITY_ATTRIBUTES nullPtr True -- inherit fd for forks
     lift $ c_CreateNamedPipe lpName
                              (fromIntegral dwOpenMode)
                              (fromIntegral dwPipeMode)
@@ -226,7 +227,7 @@ disconnectNamedPipe NamedPipe {namedPipeInternal} = do
 
 -- | Close the pipe immediately, without waiting for garbage collection
 closeNamedPipe :: NamedPipe -> IO ()
-closeNamedPipe NamedPipe {namedPipeInternal, handleOfPipe} =
+closeNamedPipe NamedPipe {namedPipeInternal} =
   finalize namedPipeInternal
   -- this just throws errors everytime, so just let the handle dangle
   -- hClose handleOfPipe
