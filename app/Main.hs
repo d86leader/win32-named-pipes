@@ -12,6 +12,23 @@ import System.Win32.NamedPipe
 
 main :: IO ()
 main = do
+    let mode = PipeMode PipeTypeMessage PipeWait PipeRejectRemoteClients
+    putStrLn "creating pipe"
+    pipe <- createNamedPipe "\\\\.\\pipe\\mynamedpipe" def mode (LimitedInstances 1) 4096 4096 0
+    putStrLn "connecting pipe"
+    connectNamedPipe pipe
+    --
+    let handle = handleOfPipe pipe
+    putStrLn "waiting for first message"
+    _msg1 <- hGetSome handle 4096
+    putStrLn "waiting for second message"
+    msg2 <- hGetSome handle 4096
+    putStrLn $ "Got message: " <> msg2
+
+
+{-
+main :: IO ()
+main = do
     times 3 $ \n -> do
         putStrLn "- creating pipe"
         let mode = PipeMode PipeTypeMessage PipeWait PipeRejectRemoteClients
@@ -42,3 +59,4 @@ times :: Monad m => Integer -> (Integer -> m ()) -> m ()
 times n a = times' 0 where
     times' i | i == n     = pure ()
              | otherwise  = a i >> times' (i + 1)
+             -}

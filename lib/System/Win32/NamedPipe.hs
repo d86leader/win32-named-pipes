@@ -197,10 +197,9 @@ connectNamedPipe NamedPipe {namedPipeInternal} = do
   withOverlapped "ConnectNamedPipe" handle 0 (startCB handle) completionCB
   where
     startCB handle lpOverlapped =
-      r <- c_ConnectNamedPipe handle nullPtr
-      if r -- discard pipe_connected error, let the manager handle every other error
-        then CbNone True
-        else do
+      c_ConnectNamedPipe handle nullPtr >>= \case
+        True  -> CbNone True
+        False -> do
           errcode <- getLastError
           if errcode == eRROR_PIPE_CONNECTED
             then CbDone Nothing
