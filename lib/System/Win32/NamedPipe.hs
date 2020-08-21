@@ -22,6 +22,7 @@ import Control.Monad (when)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Cont (ContT (..), evalContT)
 import Foreign.C.String (withCWString)
+import Foreign.ForeignPtr (withForeignPtr)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Storable (poke)
 import Foreign.Ptr (nullPtr)
@@ -32,6 +33,7 @@ import System.Win32.Types (HANDLE, ErrCode, hANDLEToHandle, iNVALID_HANDLE_VALUE
 
 import System.Win32.NamedPipe.Native
 import System.Win32.NamedPipe.Security.Native (SECURITY_ATTRIBUTES (..))
+import System.Win32.NamedPipe.Security (create777securityDescriptor)
 
 
 data Win32ErrorCode = Win32ErrorCode String ErrCode
@@ -184,8 +186,10 @@ createNamedPipe name openMode pipeMode instances outSize inSize timeout = do
     let nInstances = case instances of
           UnlimitedInstances -> pIPE_UNLIMITED_INSTANCES
           LimitedInstances n -> fromIntegral n
+    securityDescrForeignPtr <- lift create777securityDescriptor
+    securityDescr <- ContT $ withForeignPtr securityDescrForeignPtr
     securityAttrPtr <- ContT alloca
-    lift $ poke securityAttrPtr $ SECURITY_ATTRIBUTES nullPtr True -- inherit fd for forks
+    lift $ poke securityAttrPtr $ SECURITY_ATTRIBUTES securityDescr True -- inherit fd for forks
     lift $ c_CreateNamedPipe lpName
                              (fromIntegral dwOpenMode)
                              (fromIntegral dwPipeMode)

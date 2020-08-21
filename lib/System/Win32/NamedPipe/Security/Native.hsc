@@ -1,4 +1,5 @@
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 
 -- | Everything related to SECURITY_DESCRIPTOR handling
 module System.Win32.NamedPipe.Security.Native
@@ -8,10 +9,10 @@ module System.Win32.NamedPipe.Security.Native
 
 import Data.Word (Word32)
 import Foreign (Storable (..), Ptr, nullPtr)
+import Foreign.Ptr (FunPtr)
 import System.Win32.Types (DWORD, BYTE, LPWSTR, ULONG)
 import System.Win32.Security (SECURITY_DESCRIPTOR, PSID, PACL)
 
-#include "windows.h"
 #include "accctrl.h"
 
 
@@ -24,28 +25,25 @@ data SECURITY_ATTRIBUTES = SECURITY_ATTRIBUTES
 
 
 data SID_IDENTIFIER_AUTHORITY = SID_IDENTIFIER_AUTHORITY
-  { value0 :: BYTE
-  , value1 :: BYTE
-  , value2 :: BYTE
-  , value3 :: BYTE
-  , value4 :: BYTE
-  , value5 :: BYTE
+  { value0 :: {-# UNPACK #-} !BYTE
+  , value1 :: {-# UNPACK #-} !BYTE
+  , value2 :: {-# UNPACK #-} !BYTE
+  , value3 :: {-# UNPACK #-} !BYTE
+  , value4 :: {-# UNPACK #-} !BYTE
+  , value5 :: {-# UNPACK #-} !BYTE
   }
-
-authorityEveryone :: SID_IDENTIFIER_AUTHORITY
-authorityEveryone = SID_IDENTIFIER_AUTHORITY 0 0 0 0 0 1 -- taken from winnt.h
 
 
 data EXPLICIT_ACCESS_W = EXPLICIT_ACCESS_W
   { accessPermissions :: {-# UNPACK #-} !DWORD
-  , accessMode :: {-# UNPACK #-} !(#{type ACCESS_MODE}) -- ^ enum
+  , accessMode :: {-# UNPACK #-} !ACCESS_MODE
   , inheritance :: {-# UNPACK #-} !DWORD
   , trustee :: {-# UNPACK #-} !TRUSTEE_W
   }
 
 data TRUSTEE_W = TRUSTEE_W
   -- msdn says multipleTrustee is unsupported, a shame
-  { trusteeType :: {-# UNPACK #-} !(#{type TRUSTEE_TYPE}) -- ^ enum
+  { trusteeType :: {-# UNPACK #-} !TRUSTEE_TYPE
   , trusteeVal :: TrusteeUnion -- ^ lazy and wrapped to allow undefined when peeking
   }
 data TrusteeUnion
@@ -53,19 +51,54 @@ data TrusteeUnion
   | TRUSTEE_IS_SID PSID
   -- there are two more, but fuck them
 
-data EXPLICIT_ACCESS
+----------
+-- Enums
+
+newtype ACCESS_MODE = ACCESS_MODE #{type ACCESS_MODE}
+  deriving (Storable)
+#{enum ACCESS_MODE, ACCESS_MODE,
+  NOT_USED_ACCESS,
+  GRANT_ACCESS,
+  SET_ACCESS,
+  DENY_ACCESS,
+  REVOKE_ACCESS,
+  SET_AUDIT_SUCCESS,
+  SET_AUDIT_FAILURE}
+
+newtype TRUSTEE_TYPE = TRUSTEE_TYPE #{type TRUSTEE_TYPE}
+  deriving (Storable)
+#{enum TRUSTEE_TYPE, TRUSTEE_TYPE,
+  TRUSTEE_IS_UNKNOWN,
+  TRUSTEE_IS_USER,
+  TRUSTEE_IS_GROUP,
+  TRUSTEE_IS_DOMAIN,
+  TRUSTEE_IS_ALIAS,
+  TRUSTEE_IS_WELL_KNOWN_GROUP,
+  TRUSTEE_IS_DELETED,
+  TRUSTEE_IS_INVALID,
+  TRUSTEE_IS_COMPUTER}
+
+-------------------------
+-- Well-known authorities
+
+worldSidAuthority :: SID_IDENTIFIER_AUTHORITY
+worldSidAuthority = SID_IDENTIFIER_AUTHORITY 0 0 0 0 0 1 -- taken from winnt.h
+
+worldRid :: DWORD
+worldRid = #{const SECURITY_WORLD_RID}
+
 
 --------------------------------------------------
 -- Functions to create descriptors
 
 foreign import stdcall unsafe "windows.h InitializeSecurityDescriptor"
-  c_initializeSecurityDescriptor
+  c_InitializeSecurityDescriptor
     :: PSECURITY_DESCRIPTOR -- pSecurityDescriptor
     -> DWORD -- dwRevision
     -> IO Bool
 
 foreign import stdcall unsafe "windows.h SetSecurityDescriptorDacl"
-  c_setSecurityDescriptorDacl
+  c_SetSecurityDescriptorDacl
     :: PSECURITY_DESCRIPTOR -- pSecurityDescriptor
     -> Bool -- bDaclPresent
     -> PACL -- pDacl
@@ -73,21 +106,21 @@ foreign import stdcall unsafe "windows.h SetSecurityDescriptorDacl"
     -> IO Bool
 
 foreign import stdcall unsafe "windows.h SetSecurityDescriptorGroup"
-  c_setSecurityDescriptorGroup
+  c_SetSecurityDescriptorGroup
     :: PSECURITY_DESCRIPTOR -- pSecurityDescriptor
     -> PSID -- pGroup
     -> Bool -- bGroupDefaulted
     -> IO Bool
 
 foreign import stdcall unsafe "windows.h SetSecurityDescriptorOwner"
-  c_setSecurityDescriptorOwner
+  c_SetSecurityDescriptorOwner
     :: PSECURITY_DESCRIPTOR -- pSecurityDescriptor
     -> PSID -- pOwner
     -> Bool -- bOwnerDefaulted
     -> IO Bool
 
 foreign import stdcall unsafe "windows.h SetSecurityDescriptorSacl"
-  c_setSecurityDescriptorSacl
+  c_SetSecurityDescriptorSacl
     :: PSECURITY_DESCRIPTOR -- pSecurityDescriptor
     -> Bool -- bSaclPresent
     -> PACL -- pSacl
@@ -106,15 +139,24 @@ foreign import stdcall unsafe "windows.h AllocateAndInitializeSid"
     -> DWORD -- nSubAuthority5
     -> DWORD -- nSubAuthority6
     -> DWORD -- nSubAuthority7
-    -> PSID -- *pSid
-    -> Bool
+    -> Ptr PSID -- pSid
+    -> IO Bool
 
 foreign import stdcall unsafe "aclapi.h SetEntriesInAclW"
   c_SetEntriesInAclW
-    :: ULONG -- cCountOfExplicitEntries,
-    -> Ptr EXPLICIT_ACCESS_W -- pListOfExplicitEntries,
-    -> PACL -- OldAcl,
-    -> PACL -- *NewAcl
+    :: ULONG -- cCountOfExplicitEntries
+    -> Ptr EXPLICIT_ACCESS_W -- pListOfExplicitEntries
+    -> PACL -- OldAcl
+    -> (Ptr PACL) -- NewAcl
+    -> IO DWORD
+
+
+foreign import stdcall unsafe "securitybaseapi.h &FreeSid"
+  p_FreeSid :: FunPtr (PSID -> IO ())
+
+foreign import stdcall unsafe "winbase.h &LocalFree"
+  p_LocalFreeAcl :: FunPtr (PACL -> IO ())
+  -- The actual type is fucking bulletproof: `Ptr a -> Ptr a`
 
 
 ---------------------

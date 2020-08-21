@@ -23,10 +23,11 @@ library
   exposed-modules:
       System.Win32.NamedPipe
       System.Win32.NamedPipe.Native
+      System.Win32.NamedPipe.Security
       System.Win32.NamedPipe.Security.Native
   default-language: Haskell2010
 
-executable reply-pipe
+executable test-exe
   main-is: Main.hs
   hs-source-dirs:
       app
@@ -36,4 +37,5 @@ executable reply-pipe
     , bytestring
     , data-default
     , win32-named-pipes
+    , Win32
   default-language: Haskell2010
