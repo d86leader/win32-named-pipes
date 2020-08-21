@@ -18,7 +18,7 @@ library:
   - Win32 >= 2.3 && < 2.5
 
 executables:
-  reply-pipe:
+  test-exe:
     source-dirs:  app
     main:         Main.hs
     ghc-options:
@@ -30,3 +30,4 @@ executables:
     - bytestring
     - data-default
     - win32-named-pipes
+    - Win32
