@@ -17,7 +17,7 @@ import Data.Maybe (fromJust)
 import Data.Word (Word8)
 import Data.ByteString (ByteString)
 import Data.ByteString.Unsafe (unsafeUseAsCStringLen)
-import Control.Exception (Exception (..), throwIO)
+import Control.Exception (Exception (..), throwIO, mask)
 import Control.Monad (when)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Cont (ContT (..), evalContT)
@@ -25,8 +25,8 @@ import Foreign.C.String (withCWString)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Storable (poke)
 import Foreign.Ptr (nullPtr)
-import System.IO (Handle, hClose)
-import System.Mem.Weak (Weak, mkWeak, finalize, deRefWeak)
+import System.IO (Handle)
+import System.Mem.Weak (Weak, mkWeak, finalize, addFinalizer)
 import System.Win32.File (closeHandle, flushFileBuffers, win32_WriteFile)
 import System.Win32.Types (HANDLE, ErrCode, hANDLEToHandle, iNVALID_HANDLE_VALUE, getLastError)
 
@@ -158,7 +158,7 @@ data PipeInstances = UnlimitedInstances | LimitedInstances Word8
 
 
 data NamedPipe = NamedPipe
-  { namedPipeInternal :: Weak HANDLE
+  { namedPipeInternal :: HANDLE
   -- | Get haskell handle to pipe OS handle. This handle sometimes writes
   -- garbage on write operations, sometimes it closes the stream on the other
   -- end. Use the blocking 'unsafeWritePipe' for a 100% of the time working
@@ -175,7 +175,8 @@ createNamedPipe
   -> Int -- ^ Input buffer size
   -> Int -- ^ Default timeout
   -> IO NamedPipe
-createNamedPipe name openMode pipeMode instances outSize inSize timeout = do
+createNamedPipe name openMode pipeMode instances outSize inSize timeout = mask $ \unmask -> do
+  securityDescrForeignPtr <- create777securityDescriptor
   winHandle <- evalContT $ do
     lpName <- ContT $ withCWString name
     let dwOpenMode = case openMode of OpenMode a f s -> fromEnum a .|. fromEnum f .|. fromEnum s
@@ -183,8 +184,11 @@ createNamedPipe name openMode pipeMode instances outSize inSize timeout = do
     let nInstances = case instances of
           UnlimitedInstances -> pIPE_UNLIMITED_INSTANCES
           LimitedInstances n -> fromIntegral n
+    securityDescr <- ContT $ withForeignPtr securityDescrForeignPtr
     securityAttrPtr <- ContT alloca
-    lift $ poke securityAttrPtr $ SECURITY_ATTRIBUTES True -- inherit fd for forks
+    lift . unmask $
+      poke securityAttrPtr $ SECURITY_ATTRIBUTES securityDescr True -- inherit fd for forks
+    --
     lift $ c_CreateNamedPipe lpName
                              (fromIntegral dwOpenMode)
                              (fromIntegral dwPipeMode)
@@ -193,19 +197,24 @@ createNamedPipe name openMode pipeMode instances outSize inSize timeout = do
                              (fromIntegral inSize)
                              (fromIntegral timeout)
                              securityAttrPtr
-  when (winHandle == iNVALID_HANDLE_VALUE) $ do
+  when (winHandle == iNVALID_HANDLE_VALUE) . unmask $ do
     errcode <- getLastError
     throwIO $ Win32ErrorCode "Bad handle created" errcode
   hsHandle <- hANDLEToHandle winHandle
-  namedPipeHandle <- mkWeak hsHandle winHandle $ Just (closeHandle winHandle)
-  pure $ NamedPipe namedPipeHandle hsHandle
+  addFinalizer winHandle (closeHandle winHandle)
+  -- make acl stuffs live as long as the handle. I don't know if this is
+  -- necessary and I can't find the answers online: none of the examples deal
+  -- with pipes, they do stuff like creating entries in registry. One can make
+  -- a parallel between creating an entry and creating a handle, but i don't
+  -- know
+  mkWeak winHandle securityDescrForeignPtr Nothing
+  pure $ NamedPipe winHandle hsHandle
 
 
 -- | Get the client of the named pipe. Blocks the thread until client is found.
 connectNamedPipe :: NamedPipe -> IO ()
 connectNamedPipe NamedPipe {namedPipeInternal} = do
-  handle <- fromJust <$> deRefWeak namedPipeInternal
-  r <- c_ConnectNamedPipe handle nullPtr
+  r <- c_ConnectNamedPipe namedPipeInternal nullPtr
   if r
     then pure ()
     else do
@@ -217,9 +226,8 @@ connectNamedPipe NamedPipe {namedPipeInternal} = do
 -- | Disconnect the client from the named pipe
 disconnectNamedPipe :: NamedPipe -> IO ()
 disconnectNamedPipe NamedPipe {namedPipeInternal} = do
-  handle <- fromJust <$> deRefWeak namedPipeInternal
-  flushFileBuffers handle
-  r <- c_DisconnectNamedPipe handle
+  flushFileBuffers namedPipeInternal
+  r <- c_DisconnectNamedPipe namedPipeInternal
   if r
     then pure ()
     else getLastError >>= throwIO . Win32ErrorCode "Couldn't disconnect named pipe"
@@ -232,17 +240,15 @@ closeNamedPipe NamedPipe {namedPipeInternal, handleOfPipe} =
   -- hClose handleOfPipe
 
 flushPipe :: NamedPipe -> IO ()
-flushPipe NamedPipe {namedPipeInternal} = do
-  handle <- fromJust <$> deRefWeak namedPipeInternal
-  flushFileBuffers handle
+flushPipe NamedPipe {namedPipeInternal} =
+  flushFileBuffers namedPipeInternal
 
 -- | Write data into pipe. Blocks the thread until the writing completes
 unsafeWritePipe :: NamedPipe -> ByteString -> IO ()
 unsafeWritePipe NamedPipe {namedPipeInternal} text =
   unsafeUseAsCStringLen text $ \ (ptr, len) -> do
-    handle <- fromJust <$> deRefWeak namedPipeInternal
     let len' = fromIntegral len
-    written <- win32_WriteFile handle ptr len' Nothing
+    written <- win32_WriteFile namedPipeInternal ptr len' Nothing
     if written == 0 -- or idk what to check
       then do
         errcode <- getLastError
