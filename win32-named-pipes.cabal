@@ -3,7 +3,7 @@
 -- see: https://github.com/sol/hpack
 
 name:           win32-named-pipes
-version:        0.1.0.0
+version:        0.1.0.1
 author:         d86leader
 maintainer:     d86leader@mail.com
 license:        BSD3
@@ -19,14 +19,16 @@ library
     , bytestring
     , data-default
     , transformers
-    , Win32 >= 2.5.1.0
+    , Win32 >= 2.3 && < 2.5
   exposed-modules:
       System.Win32.NamedPipe
+      System.Win32.NamedPipe.Backport
       System.Win32.NamedPipe.Native
-      System.Win32.NamedPipe.NativeTypes
+      System.Win32.NamedPipe.Security
+      System.Win32.NamedPipe.Security.Native
   default-language: Haskell2010
 
-executable reply-pipe
+executable test-exe
   main-is: Main.hs
   hs-source-dirs:
       app
@@ -36,4 +38,5 @@ executable reply-pipe
     , bytestring
     , data-default
     , win32-named-pipes
+    , Win32
   default-language: Haskell2010

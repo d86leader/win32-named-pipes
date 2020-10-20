@@ -1,44 +1,18 @@
 {-# LANGUAGE OverloadedStrings #-}
 module Main where
 
-import Control.Concurrent (forkIO)
-import Data.ByteString.Char8 (hGetSome, putStrLn, pack)
-import Data.Default (def)
-import Data.Monoid ((<>))
-
-import Prelude hiding (putStrLn)
-import System.Win32.NamedPipe
-
+import Foreign (alloca, poke, castPtr)
+import Foreign.ForeignPtr (withForeignPtr)
+import System.Win32.NamedPipe.Security.Native (SECURITY_ATTRIBUTES (..))
+import System.Win32.NamedPipe.Security (create777securityDescriptor)
+import System.Win32.File (createFile, closeHandle)
 
 main :: IO ()
 main = do
-    times 3 $ \n -> do
-        putStrLn "- creating pipe"
-        let mode = PipeMode PipeTypeMessage PipeWait PipeRejectRemoteClients
-        pipe <- createNamedPipe "\\\\.\\pipe\\mynamedpipe2" def mode UnlimitedInstances 512 512 0
-        putStrLn "- connecting pipe"
-        connectNamedPipe pipe
-        putStrLn "- forking"
-        _ <- forkIO $ servePipe n pipe
-        pure ()
-    putStrLn "- Exiting"
-
-servePipe :: Integer -> NamedPipe -> IO ()
-servePipe number pipe = do
-    let n = pack . show $ number
-    let handle = handleOfPipe pipe
-    putStrLn $ n <> " Waiting for pipe message"
-    message <- hGetSome handle 512
-    putStrLn $ n <> " got message: " <> message
-    unsafeWritePipe pipe $ "Ok " <> n
-    putStrLn $ n <> " put message back"
-    disconnectNamedPipe pipe
-    putStrLn $ n <> " disconnect pipe"
-    closeNamedPipe pipe
-    putStrLn $ n <> " close pipe"
-
-
-times :: Monad m => Integer -> (Integer -> m ()) -> m ()
-times n a = times' 0 where
-    times' i | i == n     = pure ()
-             | otherwise  = a i >> times' (i + 1)
+    secDescFptr <- create777securityDescriptor
+    withForeignPtr secDescFptr $ \secDesc ->
+      alloca $ \lpSecAttrs -> do
+        let secAttrs = SECURITY_ATTRIBUTES secDesc True
+        poke lpSecAttrs secAttrs
+        h <- createFile "./testfile" 0 0 (Just $ castPtr lpSecAttrs) 2 0x80 Nothing
+        closeHandle h

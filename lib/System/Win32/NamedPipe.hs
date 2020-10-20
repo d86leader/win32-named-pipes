@@ -13,7 +13,6 @@ module System.Win32.NamedPipe
 
 import Data.Bits ((.|.))
 import Data.Default (Default (def))
-import Data.Maybe (fromJust)
 import Data.Word (Word8)
 import Data.ByteString (ByteString)
 import Data.ByteString.Unsafe (unsafeUseAsCStringLen)
@@ -22,15 +21,19 @@ import Control.Monad (when)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Cont (ContT (..), evalContT)
 import Foreign.C.String (withCWString)
+import Foreign.ForeignPtr (withForeignPtr)
 import Foreign.Marshal.Alloc (alloca)
 import Foreign.Storable (poke)
 import Foreign.Ptr (nullPtr)
 import System.IO (Handle)
-import System.Mem.Weak (Weak, mkWeak, finalize, addFinalizer)
+import System.Mem.Weak (mkWeak, addFinalizer)
 import System.Win32.File (closeHandle, flushFileBuffers, win32_WriteFile)
-import System.Win32.Types (HANDLE, ErrCode, hANDLEToHandle, iNVALID_HANDLE_VALUE, getLastError)
+import System.Win32.NamedPipe.Backport (hANDLEToHandle)
+import System.Win32.Types (HANDLE, ErrCode, iNVALID_HANDLE_VALUE, getLastError)
 
 import System.Win32.NamedPipe.Native
+import System.Win32.NamedPipe.Security.Native (SECURITY_ATTRIBUTES (..))
+import System.Win32.NamedPipe.Security (create777securityDescriptor)
 
 
 data Win32ErrorCode = Win32ErrorCode String ErrCode
@@ -176,7 +179,7 @@ createNamedPipe
   -> Int -- ^ Default timeout
   -> IO NamedPipe
 createNamedPipe name openMode pipeMode instances outSize inSize timeout = mask $ \unmask -> do
-  securityDescrForeignPtr <- create777securityDescriptor
+  securityDescrForeignPtr <- unmask create777securityDescriptor
   winHandle <- evalContT $ do
     lpName <- ContT $ withCWString name
     let dwOpenMode = case openMode of OpenMode a f s -> fromEnum a .|. fromEnum f .|. fromEnum s
@@ -207,7 +210,7 @@ createNamedPipe name openMode pipeMode instances outSize inSize timeout = mask $
   -- with pipes, they do stuff like creating entries in registry. One can make
   -- a parallel between creating an entry and creating a handle, but i don't
   -- know
-  mkWeak winHandle securityDescrForeignPtr Nothing
+  _ <- mkWeak winHandle securityDescrForeignPtr Nothing
   pure $ NamedPipe winHandle hsHandle
 
 
@@ -234,10 +237,10 @@ disconnectNamedPipe NamedPipe {namedPipeInternal} = do
 
 -- | Close the pipe immediately, without waiting for garbage collection
 closeNamedPipe :: NamedPipe -> IO ()
-closeNamedPipe NamedPipe {namedPipeInternal, handleOfPipe} =
-  finalize namedPipeInternal
+closeNamedPipe NamedPipe {} =
   -- this just throws errors everytime, so just let the handle dangle
   -- hClose handleOfPipe
+  pure ()
 
 flushPipe :: NamedPipe -> IO ()
 flushPipe NamedPipe {namedPipeInternal} =
