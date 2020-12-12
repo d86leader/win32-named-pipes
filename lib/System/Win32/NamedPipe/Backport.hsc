@@ -1,17 +1,23 @@
 {-# LANGUAGE CPP #-}
+-- | Currently backports two things from two modules:
+-- 1. 'hANDLEToHandle' from System.Win32.Types
+-- 2. 'OVERLAPPED' from System.Win32.File
 module System.Win32.NamedPipe.Backport
   ( hANDLEToHandle
+  , OVERLAPPED (..), LPOVERLAPPED
   ) where
 
 #if MIN_VERSION_Win32(2,6,0)
+import System.Win32.File (OVERLAPPED (..))
 import System.Win32.Types (hANDLEToHandle)
 #else
 
 
+import Foreign.Storable (Storable (..))
 import Foreign.C.Types (CIntPtr (..), CInt (..))
-import Foreign.Ptr (ptrToIntPtr)
+import Foreign.Ptr (Ptr, ptrToIntPtr)
 import GHC.IO.Handle.FD (fdToHandle)
-import System.Win32.Types (HANDLE)
+import System.Win32.Types (HANDLE, ULONG_PTR)
 import System.IO (Handle)
 
 #if defined(__IO_MANAGER_WINIO__)
@@ -60,6 +66,35 @@ hANDLEToHandle handle = posix
 
 foreign import ccall "_open_osfhandle"
   _open_osfhandle :: CIntPtr -> CInt -> IO CInt
+
+
+data OVERLAPPED
+  = OVERLAPPED { ovl_internal     :: ULONG_PTR
+               , ovl_internalHigh :: ULONG_PTR
+               , ovl_offset       :: DWORD
+               , ovl_offsetHigh   :: DWORD
+               , ovl_hEvent       :: HANDLE
+               } deriving (Show)
+
+instance Storable OVERLAPPED where
+  sizeOf = const ((32))
+  alignment _ = 8
+  poke buf ad = do
+    ((\hsc_ptr -> pokeByteOff hsc_ptr 0)) buf (ovl_internal     ad)
+    ((\hsc_ptr -> pokeByteOff hsc_ptr 8)) buf (ovl_internalHigh ad)
+    ((\hsc_ptr -> pokeByteOff hsc_ptr 16)) buf (ovl_offset       ad)
+    ((\hsc_ptr -> pokeByteOff hsc_ptr 20)) buf (ovl_offsetHigh   ad)
+    ((\hsc_ptr -> pokeByteOff hsc_ptr 24)) buf (ovl_hEvent       ad)
+
+  peek buf = do
+    intnl      <- ((\hsc_ptr -> peekByteOff hsc_ptr 0)) buf
+    intnl_high <- ((\hsc_ptr -> peekByteOff hsc_ptr 8)) buf
+    off        <- ((\hsc_ptr -> peekByteOff hsc_ptr 16)) buf
+    off_high   <- ((\hsc_ptr -> peekByteOff hsc_ptr 20)) buf
+    hevnt      <- ((\hsc_ptr -> peekByteOff hsc_ptr 24)) buf
+    return $ OVERLAPPED intnl intnl_high off off_high hevnt
+
+type LPOVERLAPPED = Ptr OVERLAPPED
 
 
 #endif

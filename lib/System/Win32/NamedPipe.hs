@@ -1,8 +1,10 @@
 {-# LANGUAGE LambdaCase, NamedFieldPuns #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 module System.Win32.NamedPipe
   ( NamedPipe, handleOfPipe
-  , createNamedPipe, connectNamedPipe, disconnectNamedPipe, closeNamedPipe, flushPipe
-  , unsafeWritePipe
+  , createNamedPipe, unsafeBlockingConnectNamedPipe
+  , disconnectNamedPipe, closeNamedPipe, flushPipe
+  , unsafeBlockingWritePipe
   -- * Pipe operations exceptions
   , Win32ErrorCode, Win32BrokenPipe
   -- * Pipe options. Most likely you just want to use 'def' for them
@@ -11,7 +13,7 @@ module System.Win32.NamedPipe
   , PipeInstances (..)
   ) where
 
-import Data.Bits ((.|.))
+import Data.Bits (Bits, (.|.))
 import Data.Default (Default (def))
 import Data.Word (Word8)
 import Data.ByteString (ByteString)
@@ -36,6 +38,9 @@ import System.Win32.NamedPipe.Security.Native (SECURITY_ATTRIBUTES (..))
 import System.Win32.NamedPipe.Security (create777securityDescriptor)
 
 
+-------------
+-- Exceptions
+
 data Win32ErrorCode = Win32ErrorCode String ErrCode
   deriving (Eq, Show)
 
@@ -49,17 +54,28 @@ data Win32BrokenPipe = Win32BrokenPipe
 instance Exception Win32BrokenPipe
 
 
--- | Flags for open mode for named pipes
+-----------------------
+-- Flags and parameters
+
+-- | Server pipe flags about opening mode
 data OpenMode = OpenMode PipeAccess PipeFileFlag PipeSecurity
   deriving (Eq, Show, Read)
 
-instance Default OpenMode where
-  def = OpenMode PipeAccessDuplex FileFlagNone PipeSecurityNone
+instance Default OpenMode where def = OpenMode def def def
+
+openModeFlag :: forall a. (Bits a, Num a) => OpenMode -> a
+openModeFlag (OpenMode a f s) =
+  let cast = fromIntegral . fromEnum
+      cast :: forall b. Enum b => b -> a
+  in cast a .|. cast f .|. cast s
+
 
 data PipeAccess = PipeAccessDuplex -- ^ Bidirectional pipe
                 | PipeAccessInbound -- ^ From client to server only
                 | PipeAccessOutboud -- ^ From server to client only
   deriving (Eq, Show, Read)
+
+instance Default PipeAccess where def = PipeAccessDuplex
 
 instance Enum PipeAccess where
   fromEnum = \case
@@ -72,11 +88,14 @@ instance Enum PipeAccess where
     0x2 -> PipeAccessOutboud
     _ -> error "Bad enum"
 
+
 data PipeFileFlag = FileFlagFirstPipeInstance -- ^ Only the first pipe with this flag can be created
                   | FileFlagWriteThrough -- ^ Enhances speed in one edge case, see MSDN
                   | FileFlagNone
                   -- I don't support overlapped flag
   deriving (Eq, Show, Read)
+
+instance Default PipeFileFlag where def = FileFlagNone
 
 instance Enum PipeFileFlag where
   fromEnum = \case
@@ -88,12 +107,17 @@ instance Enum PipeFileFlag where
     0x80000000 -> FileFlagWriteThrough
     0 -> FileFlagNone
     _ -> error "Bad enum"
+fileFlagOverlapped :: Int
+fileFlagOverlapped = 0x40000000
+
 
 data PipeSecurity = PipeWriteDac -- ^ Write access to pipe discretionary access control list
                   | PipeWriteOwner -- ^ Write access to pipe owner
                   | PipeAccessSystemSecurity -- ^ Write access to pipe SACL
                   | PipeSecurityNone
   deriving (Eq, Show, Read)
+
+instance Default PipeSecurity where def = PipeSecurityNone
 
 instance Enum PipeSecurity where
   fromEnum = \case
@@ -109,16 +133,25 @@ instance Enum PipeSecurity where
     _ -> error "Bad enum"
 
 
+-- | Pipe options that must be same for server and clients
 data PipeMode = PipeMode PipeType PipeWaitMode PipeRemoteMode
   deriving (Eq, Show, Read)
 
-instance Default PipeMode where
-  def = PipeMode PipeTypeMessage PipeWait PipeRejectRemoteClients
+instance Default PipeMode where def = PipeMode def def def
+
+pipeModeFlag :: forall a. (Bits a, Num a) => PipeMode -> a
+pipeModeFlag (PipeMode t w r) =
+  let cast = fromIntegral . fromEnum
+      cast :: forall b. Enum b => b -> a
+  in cast t .|. cast w .|. cast r
+
 
 data PipeType = PipeTypeByteByte -- ^ Write bytes, read bytes
               | PipeTypeMessageByte -- ^ Write messages, read bytes
               | PipeTypeMessage -- ^ Write and read messages
   deriving (Eq, Show, Read)
+
+instance Default PipeType where def = PipeTypeMessage
 
 instance Enum PipeType where
   fromEnum = \case
@@ -131,8 +164,14 @@ instance Enum PipeType where
    0x6 -> PipeTypeMessage
    _ -> error "Bad enum"
 
-data PipeWaitMode = PipeWait | PipeNowait -- ^ File operations return immediately
+
+data PipeWaitMode
+  = PipeWait
+  | PipeNowait -- ^ File operations return immediately. MSDN notes that this
+               -- should not be used except for compatability
   deriving (Eq, Show, Read)
+
+instance Default PipeWaitMode where def = PipeWait
 
 instance Enum PipeWaitMode where
   fromEnum = \case
@@ -143,8 +182,11 @@ instance Enum PipeWaitMode where
     1 -> PipeNowait
     _ -> error "Bad enum"
 
+
 data PipeRemoteMode = PipeAcceptRemoteClients | PipeRejectRemoteClients
   deriving (Eq, Show, Read)
+
+instance Default PipeRemoteMode where def = PipeRejectRemoteClients
 
 instance Enum PipeRemoteMode where
   fromEnum = \case
@@ -159,6 +201,14 @@ instance Enum PipeRemoteMode where
 -- | Amount of identical instances of a pipe created with the same name that is allowed
 data PipeInstances = UnlimitedInstances | LimitedInstances Word8
 
+instancesFlag :: Num a => PipeInstances -> a
+instancesFlag = \case
+  UnlimitedInstances -> fromIntegral pIPE_UNLIMITED_INSTANCES
+  LimitedInstances n -> fromIntegral n
+
+
+---------------------
+-- Main pipe routines
 
 data NamedPipe = NamedPipe
   { namedPipeInternal :: HANDLE
@@ -182,20 +232,15 @@ createNamedPipe name openMode pipeMode instances outSize inSize timeout = mask $
   securityDescrForeignPtr <- unmask create777securityDescriptor
   winHandle <- evalContT $ do
     lpName <- ContT $ withCWString name
-    let dwOpenMode = case openMode of OpenMode a f s -> fromEnum a .|. fromEnum f .|. fromEnum s
-    let dwPipeMode = case pipeMode of PipeMode t w r -> fromEnum t .|. fromEnum w .|. fromEnum r
-    let nInstances = case instances of
-          UnlimitedInstances -> pIPE_UNLIMITED_INSTANCES
-          LimitedInstances n -> fromIntegral n
     securityDescr <- ContT $ withForeignPtr securityDescrForeignPtr
     securityAttrPtr <- ContT alloca
     lift . unmask $
       poke securityAttrPtr $ SECURITY_ATTRIBUTES securityDescr True -- inherit fd for forks
     --
     lift $ c_CreateNamedPipe lpName
-                             (fromIntegral dwOpenMode)
-                             (fromIntegral dwPipeMode)
-                             nInstances
+                             (openModeFlag openMode)
+                             (pipeModeFlag pipeMode)
+                             (instancesFlag instances)
                              (fromIntegral outSize)
                              (fromIntegral inSize)
                              (fromIntegral timeout)
@@ -215,8 +260,8 @@ createNamedPipe name openMode pipeMode instances outSize inSize timeout = mask $
 
 
 -- | Get the client of the named pipe. Blocks the thread until client is found.
-connectNamedPipe :: NamedPipe -> IO ()
-connectNamedPipe NamedPipe {namedPipeInternal} = do
+unsafeBlockingConnectNamedPipe :: NamedPipe -> IO ()
+unsafeBlockingConnectNamedPipe NamedPipe {namedPipeInternal} = do
   r <- c_ConnectNamedPipe namedPipeInternal nullPtr
   if r
     then pure ()
@@ -247,8 +292,8 @@ flushPipe NamedPipe {namedPipeInternal} =
   flushFileBuffers namedPipeInternal
 
 -- | Write data into pipe. Blocks the thread until the writing completes
-unsafeWritePipe :: NamedPipe -> ByteString -> IO ()
-unsafeWritePipe NamedPipe {namedPipeInternal} text =
+unsafeBlockingWritePipe :: NamedPipe -> ByteString -> IO ()
+unsafeBlockingWritePipe NamedPipe {namedPipeInternal} text =
   unsafeUseAsCStringLen text $ \ (ptr, len) -> do
     let len' = fromIntegral len
     written <- win32_WriteFile namedPipeInternal ptr len' Nothing
